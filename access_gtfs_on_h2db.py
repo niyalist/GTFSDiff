@@ -190,7 +190,7 @@ def select_number_of_trips(cursor):
 
 def load_gtfs(dbname, base_dir):
     #postgreSQLに接続（接続情報は環境変数、PG_XXX）
-    connection = psycopg2.connect("dbname=mem:h2pg user=sa password='sa' host=localhost port=5435")
+    connection = psycopg2.connect("dbname=mem:{} user=sa password='sa' host=localhost port=5435".format(dbname))
     #クライアントプログラムのエンコードを設定（DBの文字コードから自動変換してくれる）
     connection.set_client_encoding('utf-8') 
     #select結果を辞書形式で取得するように設定 
@@ -228,15 +228,16 @@ def merge_and_logging_ordered_dictionary(old_dict, new_dict, keyword, version):
 #            print(key, old_dict[key])
 #            print(old_dict[key][keyword])
             if keyword in old_dict[key]:
-                old_value = old_dict[key][keyword][0]
+                old_value = old_dict[key][keyword][0] #形式はタプル 
                 new_value = content[keyword]
-                if not old_value == new_value: #値に変化があったときだけ追加する
-    #                print("    CHANGE in {}, value[{}]: from {} to {}".format(key, keyword, old_value, new_value))
-                    old_dict[key][keyword].insert(0, new_value)
+#                print("    CHECK: from {} to {}".format(old_value, new_value))                
+                if not old_value[0] == new_value: #値に変化があったときだけ追加する
+#                    print("    CHANGE in {}, value[{}]: from {} to {}".format(key, keyword, old_value, new_value))
+                    old_dict[key][keyword].insert(0, (new_value, version))
             else: #日付はあるがハッシュ内に値が無い場合
-                old_dict[key][keyword] = [content[keyword]]
+                old_dict[key][keyword] = [ (content[keyword], version) ]
         else:
-            old_dict[key] = {keyword: [content[keyword]]}
+            old_dict[key] = {keyword: [ (content[keyword], version) ]}
 
 # キーと値のペアの集合を、同一キーでまとめてキーとsetにする
 def reduce_to_key_set(input_list, aggregate_key):
@@ -292,17 +293,29 @@ def main():
 
     print("============================")
     print("===========FINAL RESULT========")
+#    for k, v in gtfs_by_date.items():
+#        print("{}: {}".format(k, v['gtfs_name']))    
     for k, v in gtfs_by_date.items():
-        print("[{}] GTFS: {}({}), service_id: {}: , trip_no: {}".format(k, v['gtfs_name'][0], len(v['gtfs_name']), history_string(v['service_id']), history_count(v['trip_id'])))
-#        print(k, v)
+        print('[{}] GTFS: {} (Gen {}), Trip: {}'.format(k, v['gtfs_name'][0][0], str(len(v['gtfs_name'])), history_count(v['trip_id'])))
+#        print("[{}] GTFS: {f}({}), service_id: {}: , trip_no: }".format(
+#                k, 
+#                v['gtfs_name'][0][0], #最新[0]の gtfs_name の値のみ
+#                len(v['gtfs_name']),  #gtfs_nameの個数
+#                history_string(v['service_id']) 
+#                history_count(v['trip_id'])
+#            )
+#        )
+
 
 def history_string(list_of_sets):
     values = list(map(lambda set_data: str(set_data), list_of_sets))
     return " <- ".join(values) +"(" + str(len(values))+")"
 
 def history_count(list_of_sets):
-    values = list(map(lambda set_data: str(len(set_data)), list_of_sets))
+    values = list(map(lambda set_data: str(len(set_data[0])) + " (" + set_data[1] + ")", list_of_sets))
     return " <- ".join(values)
 
 if __name__ == '__main__':
     main()
+
+
