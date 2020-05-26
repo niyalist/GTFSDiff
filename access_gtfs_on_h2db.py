@@ -13,6 +13,7 @@ DB名を mem:hoge とすることで、インメモリDBとして動くので何
 from pathlib import Path
 from datetime import datetime, date, timedelta
 import h2dbgtfs
+import csv
         
 def select_trip_ids(cursor, start,end):
     sql="""
@@ -60,7 +61,7 @@ def select_service_ids(cursor, start, end):
     return return_list
         
         
-def select_number_of_trips(cursor):
+def select_number_of_trips(cursor, start, end):
     sql = """
     select
         date as date,
@@ -74,8 +75,8 @@ def select_number_of_trips(cursor):
             inner join trips as tr
             on uc.service_id = tr.service_id
         where
-            uc.date >= '2020-01-01' and
-            uc.date <= '2020-06-30'
+            date >= %(start)s and
+            date <= %(end)s
     )as src
     group by 
         date
@@ -83,7 +84,7 @@ def select_number_of_trips(cursor):
         date
     """
     return_dict = {}
-    cursor.execute(sql)
+    cursor.execute(sql, {'start': start, 'end':end})
     for row in cursor.fetchall():
         date = row['date']
         count = row['count']
@@ -91,26 +92,55 @@ def select_number_of_trips(cursor):
     return return_dict
 
 
+def append_column(old_dict, new_dict, keyword, header, table):
+    old_dict.setdefault('header', {})
+    #最大のlistの値を求める
+    max_list_length = 0
+    for element in old_dict.values():
+        if table in element and len(element[table]) > max_list_length:
+            max_list_length = len(element[table])
+
+    old_dict['header'].setdefault(table, [])
+    old_dict['header'][table].append(header)
+
+    #key = '2020-05-01', content= data
+    for key, content in new_dict.items():
+        new_value = content[keyword]
+        if not key in old_dict:
+            old_dict[key] = {table: []}
+        if not table in old_dict[key]:
+            old_dict[key][table] = []
+        while len(old_dict[key][table]) < max_list_length:
+            old_dict[key][table].append("")
+        old_dict[key][table].append(new_value)
+
+    for element in old_dict.values():
+        while (table in element) and (len(element[table]) < max_list_length+1):
+            element[table].append("")
+    
+
+
 # 渡された2つの dictionanry のkeyの値に関して、変更があった場合に古いものを保存しながら新しい値を保存する
 def merge_and_logging_ordered_dictionary(old_dict, new_dict, keyword, version):
     for key, content in new_dict.items():
         if key in old_dict:
             #キー（日付）に関係するdictがすでに存在するので、書き換え（ロギング）が必要かどうかをチェック
-#            print(key, old_dict[key])
-#            print(old_dict[key][keyword])
             if keyword in old_dict[key]:
                 old_value = old_dict[key][keyword][0] #形式はタプル 
                 new_value = content[keyword]
-#                print("    CHECK: from {} to {}".format(old_value, new_value))                
                 if not old_value[0] == new_value: #値に変化があったときだけ追加する
-#                    print("    CHANGE in {}, value[{}]: from {} to {}".format(key, keyword, old_value, new_value))
                     old_dict[key][keyword].insert(0, (new_value, version))
             else: #日付はあるがハッシュ内に値が無い場合
                 old_dict[key][keyword] = [ (content[keyword], version) ]
         else:
             old_dict[key] = {keyword: [ (content[keyword], version) ]}
 
-# キーと値のペアの集合を、同一キーでまとめてキーとsetにする
+# キーと複数の値の集合を、同一キーでまとめてキーとsetにする setなので重複はない
+# {'2020-05-01' {
+#    service_id: {'平日', '平日特別'},
+#    trip_id:{'trip_1', 'trip_2', 'trip_3', 'trip_4'},
+#    route_id: {'路線1', '路線2'}
+#}
 def reduce_to_key_set(input_list, aggregate_key):
     keys = list(input_list[0].keys())
     keys.remove(aggregate_key)
@@ -128,16 +158,21 @@ def reduce_to_key_set(input_list, aggregate_key):
     return return_val
 
 def main():
-    base_dir = "uncompressed"
-    gtfs_dir = [files for files in Path(base_dir).iterdir()]
+#    base_dir = "uncompressed"
+    base_dir = "/Users/niya/Documents/oguchi/2020/gtfs/h2db/"
+    uncompress_dir = "uncompressed"
+    gtfs_dir = [files for files in Path(base_dir + uncompress_dir).iterdir()]
     gtfs_dir.sort()
 
+    gtfs_names = []
     gtfs_by_date = {}
+    gtfs_by_route = {}
 
     for d in gtfs_dir:
         print("======================================")
         print("LOAD: {}".format(d.absolute()))
         gtfs_name = d.name
+        gtfs_names.append(gtfs_name)
         gtfs_info = h2dbgtfs.load_gtfs(gtfs_name, d.absolute())
 
         info_by_date = {}
@@ -146,38 +181,38 @@ def main():
             info_by_date[date_t] = {'gtfs_name': gtfs_name}
             date_t = date_t + timedelta(days=1)
 
-        merge_and_logging_ordered_dictionary(gtfs_by_date, info_by_date, 'gtfs_name', gtfs_name)
+        append_column(gtfs_by_date, info_by_date, 'gtfs_name', gtfs_name, 'gtfs_name')
 
-#        service_ids = select_service_ids(gtfs_info['cursor'], gtfs_info['start'], gtfs_info['end'])
         service_ids = select_trip_ids(gtfs_info['cursor'], gtfs_info['start'], gtfs_info['end'])
         reduced = reduce_to_key_set(service_ids, 'date')
+        append_column(gtfs_by_date, reduced, 'service_id', gtfs_name, 'service_id')
 
-#        for k, r in reduced.items():
-#            print(k, r)
+        number_of_trips = select_number_of_trips(gtfs_info['cursor'], gtfs_info['start'], gtfs_info['end'])
+        append_column(gtfs_by_date, number_of_trips, 'count', gtfs_name, 'number_of_trips')
 
-        merge_and_logging_ordered_dictionary(gtfs_by_date, reduced, 'service_id', gtfs_name)
-        merge_and_logging_ordered_dictionary(gtfs_by_date, reduced, 'trip_id', gtfs_name)
-
-
+#        merge_and_logging_ordered_dictionary(gtfs_by_date, reduced, 'service_id', gtfs_name)
+#        merge_and_logging_ordered_dictionary(gtfs_by_date, reduced, 'trip_id', gtfs_name)
+#        merge_and_logging_ordered_dictionary(gtfs_by_date, info_by_date, 'gtfs_name', gtfs_name)
 
         h2dbgtfs.close_gtfs(gtfs_name)
 
-    print("============================")
+
     print("===========FINAL RESULT========")
-#    for k, v in gtfs_by_date.items():
-#        print("{}: {}".format(k, v['gtfs_name']))    
     for k, v in gtfs_by_date.items():
-        print('[{}] GTFS: {} (Gen {}), Trip: {}'.format(k, v['gtfs_name'][0][0], str(len(v['gtfs_name'])), history_count(v['trip_id'])))
-#        print("[{}] GTFS: {f}({}), service_id: {}: , trip_no: }".format(
-#                k, 
-#                v['gtfs_name'][0][0], #最新[0]の gtfs_name の値のみ
-#                len(v['gtfs_name']),  #gtfs_nameの個数
-#                history_string(v['service_id']) 
-#                history_count(v['trip_id'])
-#            )
-#        )
+        print("{}: {}".format(k, v))
+
+    logfile = Path(base_dir + "log.csv")
+    with open(logfile, 'w') as f:
+        writer = csv.writer(f)
+        for k, v in gtfs_by_date.items():
+            val = [k]
+            for key, data in v.items():
+                val += data
+            writer.writerow(val)
 
 
+
+    
 def history_string(list_of_sets):
     values = list(map(lambda set_data: str(set_data), list_of_sets))
     return " <- ".join(values) +"(" + str(len(values))+")"
