@@ -13,7 +13,9 @@ DB名を mem:hoge とすることで、インメモリDBとして動くので何
 from pathlib import Path
 from datetime import datetime, date, timedelta
 import h2dbgtfs
+import gtfsrealtime
 import csv
+import copy
         
 def select_trip_ids(cursor, start,end):
     sql="""
@@ -118,7 +120,25 @@ def append_column(old_dict, new_dict, keyword, header, table):
         while (table in element) and (len(element[table]) < max_list_length+1):
             element[table].append("")
     
-
+def finalize_column(dict, table, remove_others = False):
+    for key, content in dict.items():
+        if key == 'header':
+            if remove_others:
+                content[table] = ['final']
+            else:
+                content[table].append('final')
+        else:
+            value_list = content[table]
+            final_val = ""
+            for val in value_list:
+                if not ((val is None) or (type(val) is str and len(val) <= 0)):
+                    final_val = val
+            if remove_others:
+                content[table] = [final_val]
+            else:
+                value_list.append(final_val)
+    
+    
 
 # 渡された2つの dictionanry のkeyの値に関して、変更があった場合に古いものを保存しながら新しい値を保存する
 def merge_and_logging_ordered_dictionary(old_dict, new_dict, keyword, version):
@@ -181,25 +201,67 @@ def main():
             info_by_date[date_t] = {'gtfs_name': gtfs_name}
             date_t = date_t + timedelta(days=1)
 
+        #各日付での gtfsの名称
         append_column(gtfs_by_date, info_by_date, 'gtfs_name', gtfs_name, 'gtfs_name')
-
+        #各日付での service_id
         service_ids = select_trip_ids(gtfs_info['cursor'], gtfs_info['start'], gtfs_info['end'])
         reduced = reduce_to_key_set(service_ids, 'date')
         append_column(gtfs_by_date, reduced, 'service_id', gtfs_name, 'service_id')
-
+        #各日付での trip数
         number_of_trips = select_number_of_trips(gtfs_info['cursor'], gtfs_info['start'], gtfs_info['end'])
         append_column(gtfs_by_date, number_of_trips, 'count', gtfs_name, 'number_of_trips')
 
-#        merge_and_logging_ordered_dictionary(gtfs_by_date, reduced, 'service_id', gtfs_name)
-#        merge_and_logging_ordered_dictionary(gtfs_by_date, reduced, 'trip_id', gtfs_name)
-#        merge_and_logging_ordered_dictionary(gtfs_by_date, info_by_date, 'gtfs_name', gtfs_name)
+        append_column(gtfs_by_date, reduced, 'trip_id', gtfs_name, 'trips')
 
         h2dbgtfs.close_gtfs(gtfs_name)
 
+    finalize_column(gtfs_by_date, 'gtfs_name')
+    finalize_column(gtfs_by_date, 'service_id')    
+    finalize_column(gtfs_by_date, 'number_of_trips')
+    finalize_column(gtfs_by_date, 'trips', True) 
+
+    #gtfs_realtimeから減便
+
+    from_time = datetime(2020, 3, 1, 3, 0, 0)
+    to_time   = datetime(2020, 5, 31, 3, 0, 0)
+    alert_path = Path("alert")
+
+    next_time = from_time
+    while next_time <= to_time:
+        file_name = next_time.strftime("%Y-%m-%dT%H:%M:*.pb")
+        files = sorted(alert_path.glob(file_name))
+        if len(files) > 0:
+            file = files[0]
+            f = open(file, "rb")
+            content = f.read()
+            f.close()
+            alert = gtfsrealtime.read_gtfs_realtime_alert(content)
+
+            key = next_time.date()
+            value = gtfs_by_date[key]['trips'][-1] # 最終要素
+            renew_value = copy.copy(value)
+            print("----------{}------------".format(key))
+
+            for data in alert['alert']:
+                for period in data.period:
+                    if period.start <= next_time and period.end >= next_time:
+                        for entity in data.informed_entity:
+                            if data.effect == 'NO_SERVICE': #運休
+                                renew_value.discard(entity.trip_id)
+            print("From: {} to {}".format(len(value), len(renew_value)))
+            gtfs_by_date[key]['trips'].append(renew_value)
+            gtfs_by_date[key]['trips'].append(value - renew_value) #diff
+            gtfs_by_date[key]['trips'].append(len(value))
+            gtfs_by_date[key]['trips'].append(len(renew_value))
+
+        next_time = next_time + timedelta(days=1)
+
+
+
 
     print("===========FINAL RESULT========")
-    for k, v in gtfs_by_date.items():
-        print("{}: {}".format(k, v))
+#    for k, v in gtfs_by_date.items():
+#        print("{}: {}".format(str(type(k)), v))
 
     logfile = Path(base_dir + "log.csv")
     with open(logfile, 'w') as f:
