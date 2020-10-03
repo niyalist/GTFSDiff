@@ -223,7 +223,7 @@ def main():
     #gtfs_realtimeから減便
 
     from_time = datetime(2020, 3, 1, 3, 0, 0)
-    to_time   = datetime(2020, 5, 31, 3, 0, 0)
+    to_time   = datetime(2020, 8, 20, 3, 0, 0)
     alert_path = Path("alert")
 
     next_time = from_time
